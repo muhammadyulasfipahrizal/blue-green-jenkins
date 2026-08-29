@@ -1,0 +1,15 @@
+services:
+  green:
+    image: zero-downtime-app:${APP_IMAGE_TAG}
+    container_name: app-green
+    environment:
+      APP_VERSION: v2
+    ports:
+      - "8082:8080"
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true

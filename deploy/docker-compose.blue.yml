@@ -1,0 +1,15 @@
+services:
+  blue:
+    image: zero-downtime-app:${APP_IMAGE_TAG}
+    container_name: app-blue
+    environment:
+      APP_VERSION: v1
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true

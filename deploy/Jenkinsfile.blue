@@ -1,0 +1,162 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME   = 'zero-downtime-app'
+        IMAGE_TAG  = "${BUILD_NUMBER}"
+        DEPLOY_DIR = '/home/ubuntu/projects/zero-downtime-jenkins'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Transfer Source') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'deploy-host',
+                        variable: 'DEPLOY_HOST'
+                    )
+                ]) {
+                    sshagent(['ssh-vm1']) {
+                        sh '''
+                            ssh root@${DEPLOY_HOST} "
+                                mkdir -p ${DEPLOY_DIR} &&
+                                rm -rf ${DEPLOY_DIR}/app &&
+                                rm -rf ${DEPLOY_DIR}/deploy
+                            "
+
+                            tar \
+                                --exclude='.git' \
+                                -czf - \
+                                app \
+                                deploy | \
+                            ssh root@${DEPLOY_HOST} \
+                                "tar -xzf - -C ${DEPLOY_DIR}"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'deploy-host',
+                        variable: 'DEPLOY_HOST'
+                    )
+                ]) {
+                    sshagent(['ssh-vm1']) {
+                        sh '''
+                            ssh root@${DEPLOY_HOST} "
+                                cd ${DEPLOY_DIR}/app &&
+                                docker run --rm \
+                                    -v \\$PWD:/app \
+                                    -w /app \
+                                    golang:1.22 \
+                                    go test ./...
+                            "
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'deploy-host',
+                        variable: 'DEPLOY_HOST'
+                    )
+                ]) {
+                    sshagent(['ssh-vm1']) {
+                        sh '''
+                            ssh root@${DEPLOY_HOST} "
+                                cd ${DEPLOY_DIR} &&
+                                docker build \
+                                    -t ${APP_NAME}:${IMAGE_TAG} \
+                                    ./app
+                            "
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Blue') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'deploy-host',
+                        variable: 'DEPLOY_HOST'
+                    )
+                ]) {
+                    sshagent(['ssh-vm1']) {
+                        sh '''
+                            ssh root@${DEPLOY_HOST} "
+                                cd ${DEPLOY_DIR}/deploy &&
+                                APP_IMAGE_TAG=${IMAGE_TAG} \
+                                docker compose \
+                                    -f docker-compose.blue.yml \
+                                    up -d
+                            "
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Verify Blue') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'deploy-host',
+                        variable: 'DEPLOY_HOST'
+                    )
+                ]) {
+                    sshagent(['ssh-vm1']) {
+                        sh '''
+                            ssh root@${DEPLOY_HOST} "
+                                curl --fail \
+                                    http://127.0.0.1:8081/health
+                            "
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Switch Traffic') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'deploy-host',
+                        variable: 'DEPLOY_HOST'
+                    )
+                ]) {
+                    sshagent(['ssh-vm1']) {
+                        sh '''
+                            ssh root@${DEPLOY_HOST} "
+                                printf '%s\\n' \
+                                    'upstream app {' \
+                                    '    server app-blue:8080;' \
+                                    '}' \
+                                    > ${DEPLOY_DIR}/nginx/upstream.conf
+
+                                docker exec app-nginx nginx -t &&
+                                docker exec app-nginx nginx -s reload
+                            "
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}
